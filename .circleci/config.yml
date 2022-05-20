@@ -1,37 +1,86 @@
+# PHP CircleCI 2.0 configuration file
+#
+# Check https://circleci.com/docs/2.0/language-php/ for more details
+#
 version: 2
 jobs:
-  build:
-    working_directory: /var/www/html
+  test:
     docker:
-      - image: php:7.1-apache
+      # Specify the version you desire here
+      - image: circleci/php:7.2-stretch
+
+      # Specify service dependencies here if necessary
+      # CircleCI maintains a library of pre-built images
+      # documented at https://circleci.com/docs/2.0/circleci-images/
+      # Using the RAM variation mitigates I/O contention
+      # for database intensive operations.
+      # - image: circleci/mysql:5.7-ram
+      # - image: redis:3
+      - image: circleci/mysql:8.0.20-ram
+        command: mysqld --default-authentication-plugin=mysql_native_password
         environment:
-          APP_ENV: test
+          MYSQL_USER: forge
+          MYSQL_DATABASE: forge
+          MYSQL_ROOT_PASSWORD: ''
+          MYSQL_PASSWORD: 'forge'
+
     steps:
-      - run:
-          name: Install system packages
-          command: apt-get update && apt-get -y install git
-      - run:
-          name: Install PHP extensions
-          command: docker-php-ext-install pdo
       - checkout
       - run:
-          name: Install Composer
+          name: Install MySQL driver
           command: |
-            php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');"
-            php -r "if (hash_file('SHA384', 'composer-setup.php') === trim(file_get_contents('https://composer.github.io/installer.sig'))) { echo 'Installer verified'; } else { echo 'Installer invalid'; unlink('composer-setup.php'); } echo PHP_EOL;"
-            php composer-setup.php
-            php -r "unlink('composer-setup.php');"
+            sudo docker-php-ext-configure pdo_mysql --with-pdo-mysql=mysqlnd
+            sudo docker-php-ext-install zip bcmath pdo_mysql
       - run:
-          name: Display PHP information
+          name: Install Node
           command: |
-            php -v
-            php composer.phar --version
-      - run:
-          name: Install project dependencies
-          command: php composer.phar install
-      - run:
-          name: Run CS tests
-          command: vendor/bin/phpcs
-      - run:
-          name: Run Unit tests
-          command: vendor/bin/phpunit
+            curl -sL https://deb.nodesource.com/setup_10.x | sudo -E bash -
+            sudo apt-get install -y nodejs
+
+      # Download and cache dependencies
+
+      # composer cache
+      - restore_cache:
+          keys:
+          # "composer.json" can be used if "composer.json"
+          # is not committed to the repository.
+          - composer-v1-{{ checksum "composer.lock" }}
+          # fallback to using the latest cache if no exact match is found
+          - composer-v1-
+      - run: composer install -n --prefer-dist
+      - save_cache:
+          key: composer-v1-{{ checksum "composer.lock" }}
+          paths:
+            - vendor
+
+      # node cache
+      - restore_cache:
+          keys:
+            - node-v4-{{ checksum "package.json" }}
+            - node-v4-
+      - run: npm install
+      - save_cache:
+          key: node-v4-{{ checksum "package.json" }}
+          paths:
+            - node_modules
+            - ~/.yarn
+
+      # prepare the database
+      - run: touch storage/testing.sqlite
+      - run: php artisan migrate --env=testing --database=mysql --force
+
+      # run tests with phpunit or codecept
+      #- run: ./vendor/bin/phpunit
+      # this example uses codecept but you're not limited to it
+      - run: ./vendor/bin/codecept build
+      - run: ./vendor/bin/codecept run --xml result.xml
+      - store_test_results:
+          path: tests/_output
+      - store_artifacts:
+          path: tests/_output
+
+workflows:
+  version: 2
+  workflow:
+    jobs:
+    - test
